@@ -18,14 +18,23 @@ def openDataFile(file: str = ""):
     """Function to open a DataFile using tag in file header"""
 
     if not len(file):
-        from tkinter import filedialog
+        from tkinter import filedialog, Tk
+        root = Tk()
+        root.withdraw()
+
         file = filedialog.askopenfilename()
+        root.destroy()
+
         if not len(file):
             print("No file selected")
             return
 
     with open(file) as fID:
-        header = fID.readline().split(',')
+        try:
+            header = fID.readline().split(',')
+        except UnicodeDecodeError:
+            print("Error reading file - please check file type")
+            return None
 
     match header[0]:
         case "CompressorRigFile" | "Compressor Rig V2 logfile":
@@ -37,9 +46,11 @@ def openDataFile(file: str = ""):
             return TurboRigFile(file)
         case "Theme5 TurboFile" | "Theme 5 turbo rig datafile":
             return Theme5TurboFile(file)
+        case "HeatTrap":
+            return HeatTrapFile(file)
         case _:
             print("filetype not matched")
-            return None
+            return ScaledDataFile(file)
 
 def createFileSet(method: str = "selectFiles", reduce: str = "mean",
                   include_subfolders = False, file_types: str = ".csv"):
@@ -53,7 +64,6 @@ def createFileSet(method: str = "selectFiles", reduce: str = "mean",
     root = Tk()
     root.withdraw()
     filenames = []
-    skippedFiles = []
     match method:
         case "selectFiles":
             filenames = filedialog.askopenfilenames(defaultextension=search_path)
@@ -96,22 +106,23 @@ def createFileSet(method: str = "selectFiles", reduce: str = "mean",
 
     # create a FileSet from the returned object
 
-    if isinstance(data_file, CompressorRigFile):
+    if isinstance(data_file, DataFile):
+        file_set = FileSet(data_file)
+    elif isinstance(data_file, CompressorRigFile):
         file_set = FileSetCR(data_file)
     elif isinstance(data_file, TurboRigFile):
         file_set = FileSetTurbo(data_file)
-    elif isinstance(data_file, DataFile):
-        file_set = FileSet(data_file)
     else:
         print("unknown data file type ",type(data_file))
         return
 
-    for i in range(i,len(filenames)):
+    for i in range(i+1,len(filenames)):
         try:
-            file_set.addFile(openDataFile(filenames[i]))
+            file_set.addFiles(openDataFile(filenames[i]))
         except:
             pass
 
+    return file_set
 
 class DataChannel:
     """Contains the data, and associated parameters for a channel
@@ -291,7 +302,7 @@ class DataFile:
 
         return data
 
-    def plotData(self, channelSet, *args):
+    def plotData(self, channelSet, show_plot = True, *args):
         """Plot directly channels of data
         
         """
@@ -308,9 +319,11 @@ class DataFile:
             plt.legend(self.__plotLabels(channelSet))
 
         plt.grid(True)
-        plt.show()
 
-    def plotTime(self, channelSet, *args):
+        if show_plot:
+            plt.show()
+
+    def plotTime(self, channelSet, show_plot=True, *args):
         """Plots the selected channels against the time channel
         
         """
@@ -326,9 +339,10 @@ class DataFile:
             plt.legend(self.__plotLabels(channelSet))
 
         plt.grid(True)
-        plt.show()
+        if show_plot:
+            plt.show()
 
-    def plotXY(self, xChannel, yChannels, *args):
+    def plotXY(self, xChannel, yChannels, show_plot=True, *args):
         """
         Plots channels specified in yChannels against xChannel
         """
@@ -347,7 +361,8 @@ class DataFile:
             plt.legend(self.__plotLabels(yChannels))
 
         plt.grid(True)
-        plt.show()
+        if show_plot:
+            plt.show()
 
     def showFilename(self):
         """ Print filename to screen
@@ -454,6 +469,25 @@ class DataFile:
         """
         print("not done yet")
         pass
+
+    def FFT(self, channel, plot_graph=True, freq_cutoff=1500):
+
+        if isinstance(channel, list):
+            channel = channel[0]
+
+        # perform the FFT, normalize the response and select only the sensible frequency range
+        ft = np.fft.fft(self.getChannelData(channel))[1:(self.dataPoints // 2)+1] / self.dataPoints
+
+        # generate corresponding frequency range
+        fr = self.frequency * np.arange(1,(self.dataPoints// 2)+1) / self.dataPoints
+
+        if plot_graph:
+            plt.plot(fr,abs(ft.real))
+            plt.xlim(0, freq_cutoff)
+            plt.xlabel("Frequency (Hz)")
+            plt.ylabel(self.getChannelNames(channel)[0] + " frequency response")
+            plt.grid(True)
+            plt.show()
 
     def __ID(self, names, withFound=False):
         """
@@ -720,16 +754,29 @@ class CompressorRigFile(ScaledDataFile):
     def __init__(self, filename=""):
         super().__init__(filename)
 
-        match self.customFileVersion:
-            case "1.1" | "1.2":
-                self.timestamp = datetime.strptime(self.customHeader[0], "%d/%m/%Y %H:%M")
-            case "1.3":
-                self.timestamp = datetime.strptime(self.customHeader[0], "%d/%m/%Y %H:%M:%S")
+        if self != None:
+            match self.customFileVersion:
+                case "1.0":
+                    self.timestamp = datetime.strptime(self.customHeader[0], "%d/%m/%Y %H:%M")
+                    self.frequency = int(self.customHeader[2])
+                    self.motorSpeed = 0
+                    self.pulsator = 0
+                    self.valvePosition = 0
+                case "1.1" | "1.2":
+                    self.timestamp = datetime.strptime(self.customHeader[0], "%d/%m/%Y %H:%M")
+                    self.frequency = int(self.customHeader[2])
+                    self.motorSpeed = int(self.customHeader[4])
+                    self.pulsator = int(self.customHeader[6])
+                    self.valvePosition = int(self.customHeader[8])
+                case "1.3":
+                    self.timestamp = datetime.strptime(self.customHeader[0], "%d/%m/%Y %H:%M:%S")
+                    self.frequency = int(self.customHeader[2])
+                    self.motorSpeed = int(self.customHeader[4])
+                    self.pulsator = int(self.customHeader[6])
+                    self.valvePosition = int(self.customHeader[8])
+                case _:
+                    print("unknown custom file version ", self.customFileVersion)
 
-        self.frequency = int(self.customHeader[2])
-        self.motorSpeed = int(self.customHeader[4])
-        self.pulsator = int(self.customHeader[6])
-        self.valvePosition = int(self.customHeader[8])
 
 
 class TurboRigFile(ScaledDataFile):
@@ -750,6 +797,25 @@ class TurboRigFile(ScaledDataFile):
         self.pulsator = int(self.customHeader[6])
         self.valvePosition = int(self.customHeader[8])
 
+
+class HeatTrapFile(ScaledDataFile):
+    """DataFile type specifically for handling Turbo test rig logged data
+
+    TurboRigFile objects contain an array of DataFileChannel types for
+    each channel of data contained within the file.
+
+    DataFileChannel objects can be accessed via
+        TurboRigFile.dataChannels
+    """
+
+    def __init__(self, filename=""):
+        super().__init__(filename)
+
+        self.supplyPressure = float(self.customHeader[2])
+        self.outletValve = float(self.customHeader[4])
+        self.propValve = float(self.customHeader[6])
+        self.AVT_Speed = int(self.customHeader[8])
+        self.frequency = int(self.customHeader[10])
 
 class Theme5TurboFile(TurboRigFile):
     """ DataFile type for Theme 5"""
@@ -803,13 +869,15 @@ class FileSet():
         if success == False:
             print("warning: not all files were added to the FileSet")
 
+    def __len__(self):
+        return len(self.dataFiles)
     def addFiles(self, dataFiles):
         """adds a new DataFile to the FileSet"""
 
         if type(dataFiles) != list: dataFiles = [dataFiles]
 
         for file in dataFiles:
-            if type(file) == DataFile:
+            if isinstance(file, DataFile):
                 self.dataFiles.append(file)
 
         self.updateFileSet()
@@ -819,13 +887,36 @@ class FileSet():
 
         self.fileCount = len(self.dataFiles)
         dataPoints = []
+        filenames = []
         for file in self.dataFiles:
             dataPoints.append(file.dataPoints)
+            filenames.append(os.path.basename(file.filename))
 
         self.dataPoints = min(dataPoints)
+        self.files = filenames
 
         if max(dataPoints) != min(dataPoints):
             self.equalLengths = False
+
+    def plot(self, channel, *args):
+        for data_file in self.dataFiles:
+            data_file.plotData(channel, show_plot=False, *args)
+        plt.legend(self.files)
+        plt.show()
+
+
+    def plotTime(self, channel, *args):
+        for data_file in self.dataFiles:
+            data_file.plotTime(channel, show_plot=False, *args)
+        plt.legend(self.files)
+        plt.show()
+
+    def plotXY(self, x_channel, y_channel, *args):
+        for data_file in self.dataFiles:
+            data_file.plotXY(x_channel, y_channel, False, *args)
+        plt.legend(self.files)
+        plt.show()
+
 
 class FileSetCR(FileSet):
 
