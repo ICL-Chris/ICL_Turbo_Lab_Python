@@ -12,6 +12,7 @@ import os.path
 from datetime import datetime
 import matplotlib.pyplot as plt
 import numpy as np
+import pandas as pd
 
 
 def openDataFile(file: str = ""):
@@ -52,8 +53,9 @@ def openDataFile(file: str = ""):
             print("filetype not matched")
             return ScaledDataFile(file)
 
+
 def createFileSet(method: str = "selectFiles", reduce: str = "mean",
-                  include_subfolders = False, file_types: str = ".csv"):
+                  include_subfolders=False, file_types: str = "csv"):
     from tkinter import filedialog, Tk
     from pathlib import Path
     import os
@@ -67,14 +69,12 @@ def createFileSet(method: str = "selectFiles", reduce: str = "mean",
     match method:
         case "selectFiles":
             filenames = filedialog.askopenfilenames(defaultextension=search_path)
-            root.destroy()
             if not len(filenames):
                 print("no files selected")
                 return
 
         case "selectFolder":
             folder = filedialog.askdirectory(mustexist=True, title="Select folder containing files")
-            root.destroy()
             if not len(folder):
                 print("no folder selected")
                 return
@@ -82,13 +82,15 @@ def createFileSet(method: str = "selectFiles", reduce: str = "mean",
             os.chdir(folder)
             for item in Path().glob(search_path):
                 if item.is_file():
-                    filenames.append(item)
+                    filenames.append(item.name)
             os.chdir(current_path)
 
         case "currentFolder":
             for item in Path().glob(search_path):
                 if item.is_file():
-                    filenames.append(item)
+                    filenames.append(item.name)
+
+    root.destroy()
 
     # check for any files
     if not len(filenames):
@@ -113,16 +115,17 @@ def createFileSet(method: str = "selectFiles", reduce: str = "mean",
     elif isinstance(data_file, TurboRigFile):
         file_set = FileSetTurbo(data_file)
     else:
-        print("unknown data file type ",type(data_file))
+        print("unknown data file type ", type(data_file))
         return
 
-    for i in range(i+1,len(filenames)):
+    for i in range(i + 1, len(filenames)):
         try:
             file_set.addFiles(openDataFile(filenames[i]))
         except:
             pass
 
     return file_set
+
 
 class DataChannel:
     """Contains the data, and associated parameters for a channel
@@ -151,6 +154,23 @@ class DataChannel:
 
             self.data = self.data[selection]
 
+    def toPandas(self, timeIndex = []):
+        import pandas as pd
+        if not timeIndex:
+            return pd.Series(self.data, name=self.name)
+        else:
+            return pd.Series(self.data, index=timeIndex, name=self.name)
+
+    def __add__(self, other):
+
+        return self.data + other
+
+    def __sub__(self, other):
+
+        return self.data - other
+
+    def __mul__(self, other):
+        return self.data * other
 
 class ScaledDataChannel(DataChannel):
     """Specific class for reading test data from logged datafile"""
@@ -283,26 +303,28 @@ class DataFile:
 
         print("\t\n")
 
-    def getChannelData(self, channelSet=[]):
+    def getChannelData(self, channel_set=[]):
         """
         Return specific channel data
         
         returns all data if no channels are specified
         """
+        if not channel_set:
+            channel_set = list(range(self.channelCount))
+        else:
+            channel_set = self.__ID(channel_set)
 
-        channelSet = self.__ID(channelSet)
+        if len(channel_set) == 0:
+            channel_set = list(range(self.channelCount))
 
-        if len(channelSet) == 0:
-            channelSet = list(range(self.channelCount))
+        data = self.dataChannels[channel_set[0]].data
 
-        data = self.dataChannels[channelSet[0]].data
-
-        for i in range(1, len(channelSet)):
-            data = np.vstack((data, [self.dataChannels[channelSet[i]].data]))
+        for i in range(1, len(channel_set)):
+            data = np.vstack((data, [self.dataChannels[channel_set[i]].data]))
 
         return data
 
-    def plotData(self, channelSet, show_plot = True, *args):
+    def plotData(self, channelSet, show_plot=True, *args):
         """Plot directly channels of data
         
         """
@@ -332,7 +354,7 @@ class DataFile:
         plt.plot(self.getChannelData(0), self.getChannelData(channelSet).T, *args)
 
         # format the plot
-        plt.xlabel("Time (s)")
+        plt.xlabel(self.__plotLabel(0))
         if len(channelSet) == 1:
             plt.ylabel(self.__plotLabel(channelSet))
         else:
@@ -417,25 +439,20 @@ class DataFile:
         # identify crossing threshold
         peak = max(filteredChannel)
         trough = min(filteredChannel)
-        threshold = trough + ((peak - trough) * threshold)
+        threshold = trough + ((peak - trough) * abs(threshold))
 
         # identify threshold crossing indices
-        above = np.greater(filteredChannel, threshold)
-        crossingPoints = []
-        for i in range(len(above) - 1):
-            if above[i + 1] > above[i]:
-                crossingPoints.append(i)
+        if threshold > 0:
+            above = np.greater(filteredChannel, abs(threshold))
+        else:
+            above = np.less_equal(filteredChannel, abs(threshold))
 
-        periods = np.subtract(crossingPoints[1:], crossingPoints[:-1])
+        crossingPoints = np.nonzero(above[1:] > above[:-1])[0]
 
-        # calculate the period length
-        # median period provides a rough estimate of period length
-        medPeriod = np.median(periods)
-        # mean of period lengths close to median (i.e. full cycles) provides best approximation
-        period = periods[abs(periods - medPeriod) < (0.1 * medPeriod)].mean() * cycleRepeats
+        period = (crossingPoints[-1] - crossingPoints[0]) / (len(crossingPoints) - 1)
 
         # create the 3D output array
-        averageCycle = np.zeros((int(period), len(channelSet), int((self.dataPoints // period) - 1)))
+        averageCycle = np.zeros((int(period), len(channelSet), int((self.dataPoints // period))))
 
         # get the requested channels for the output
         data = self.getChannelData(channelSet)
@@ -448,19 +465,24 @@ class DataFile:
             position += period
             i += 1
 
+        if i <= averageCycle.shape[2]:
+            averageCycle = np.delete(averageCycle, range(i, averageCycle.shape[2]), axis=2)
+
         # create time data
         time = np.array(range(0, int(period))) * 1 / self.frequency
 
         if showPlot:
             primary = self.__ID(primary)
 
-            for i in range(i - 1):
-                plt.plot(time, np.squeeze(averageCycle[:, primary, i]), 'k.')
+            fig, ax = plt.subplots()
 
-            plt.plot(time, np.squeeze(np.mean(averageCycle[:, primary, :], axis=2)), 'r')
+            for i in range(i - 1):
+                ax.scatter(time, np.squeeze(averageCycle[:, primary, i]), marker='.', color="0.8", alpha=0.2)
+
+            ax.plot(time, np.squeeze(np.mean(averageCycle[:, primary, :], axis=2)), color="C3")
             plt.show()
 
-        return (time, averageCycle)
+        return (np.squeeze(np.mean(averageCycle, axis=2)), time)
 
     def delta(self, channelSet):
         """Returns an array of length = dataPoints containing the point-
@@ -470,19 +492,77 @@ class DataFile:
         print("not done yet")
         pass
 
+    def reduceToMean(self):
+        """Creates a deep copy of the DataFile with a single value for each channel as them mean of each channel"""
+        import copy
+
+        newDataFile = copy.deepcopy(self)
+
+        for i in range(self.channelCount):
+            newDataFile.dataChannels[i].data = np.mean(newDataFile.dataChannels[i].data)
+
+        newDataFile.dataPoints = 1
+
+        return newDataFile
+
+    def reduceToCycle(self, primary, *,
+                      cycleRepeats=1,
+                      threshold=0.5,
+                      halfWindowSize=50,
+                      showPlot=False,
+                      align=True):
+        """Creates a deep copy of the DataFile ith the data replaced by a single-cycle reduction"""
+
+        import copy
+
+        newDataFile = copy.deepcopy(self)
+
+        averageCycle, time = self.cyclicAverage(primary=primary,
+                                                cycleRepeats=cycleRepeats,
+                                                threshold=threshold,
+                                                halfWindowSize=halfWindowSize,
+                                                showPlot=showPlot,
+                                                align=align)
+
+        newDataFile.dataPoints = len(time)
+
+        for i in range(newDataFile.channelCount):
+            newDataFile.dataChannels[i].data = averageCycle[:, i]
+
+        return newDataFile
+
+    def toPandas(self):
+        """Produce a panda dataFrame containing data from the DataFile"""
+        import pandas as pd
+        if self.dataPoints == 1:
+            return pd.Series(data=self.getChannelData()[:,0], index=self.getChannelNames(), name="Mean Values")
+
+        else:
+            channelDict = {}
+            for channel, name in zip(self.dataChannels, self.getChannelNames()):
+                channelDict[name] = channel.toPandas()
+
+            return pd.DataFrame(channelDict)
+
+    def channelToPandas(self, channel):
+
+        channel = self.__ID(channel)[0]
+
+        return self.dataChannels[channel].toPandas()
+
     def FFT(self, channel, plot_graph=True, freq_cutoff=1500):
 
         if isinstance(channel, list):
             channel = channel[0]
 
         # perform the FFT, normalize the response and select only the sensible frequency range
-        ft = np.fft.fft(self.getChannelData(channel))[1:(self.dataPoints // 2)+1] / self.dataPoints
+        ft = np.fft.fft(self.getChannelData(channel))[1:(self.dataPoints // 2) + 1] / self.dataPoints
 
         # generate corresponding frequency range
-        fr = self.frequency * np.arange(1,(self.dataPoints// 2)+1) / self.dataPoints
+        fr = self.frequency * np.arange(1, (self.dataPoints // 2) + 1) / self.dataPoints
 
         if plot_graph:
-            plt.plot(fr,abs(ft.real))
+            plt.plot(fr, abs(ft.real))
             plt.xlim(0, freq_cutoff)
             plt.xlabel("Frequency (Hz)")
             plt.ylabel(self.getChannelNames(channel)[0] + " frequency response")
@@ -503,7 +583,7 @@ class DataFile:
         for channel in self.dataChannels:
             channelNames.append(channel.name.casefold())
 
-        # ensure if a single item i spassed it is treated as a list
+        # ensure if a single item is passed it is treated as a list
         if type(names) is not list: names = [names]
 
         # for each item provided...
@@ -778,7 +858,6 @@ class CompressorRigFile(ScaledDataFile):
                     print("unknown custom file version ", self.customFileVersion)
 
 
-
 class TurboRigFile(ScaledDataFile):
     """DataFile type specifically for handling Turbo test rig logged data
     
@@ -794,8 +873,12 @@ class TurboRigFile(ScaledDataFile):
 
         self.frequency = int(self.customHeader[2])
         self.motorSpeed = int(self.customHeader[4])
-        self.pulsator = int(self.customHeader[6])
-        self.valvePosition = int(self.customHeader[8])
+        try:
+            self.pulsator = int(self.customHeader[6])
+            self.valvePosition = int(self.customHeader[8])
+        except:
+            self.pulsator = int(float(self.customHeader[6]))
+            self.valvePosition = int(float(self.customHeader[8]))
 
 
 class HeatTrapFile(ScaledDataFile):
@@ -817,28 +900,43 @@ class HeatTrapFile(ScaledDataFile):
         self.AVT_Speed = int(self.customHeader[8])
         self.frequency = int(self.customHeader[10])
 
+
 class Theme5TurboFile(TurboRigFile):
     """ DataFile type for Theme 5"""
 
-    def __init__(self, filename="", withSuccess=False):
-        super().__init__(filename, withSuccess)
+    def __init__(self, filename=""):
+        super().__init__(filename)
 
         if self.isValid:
             customParameters = self.customFileVersion
-            self.timestamp = datetime(customParameters[0], "%d/%m/%Y %H:%M:%S")
-            self.frequency = 5000
-            self.speed = float(customParameters[2])
-            self.massflow = 0
-            mfr = dict(zip([2.5, 1.0, 0.4, 0], [0.25, 0.5, 0.75, 1]))
             try:
-                self.flowRatio = mfr[float(customParameters[6]) / float(customParameters[4])]
+                self.timestamp = datetime.strptime(self.customHeader[0], "%d/%m/%Y %H:%M:%S")
             except:
-                self.flowRatio = 0
+                self.timestamp = datetime.strptime(self.customHeader[0], "%d/%m/%y %H:%M:%S")
 
-            self.targetPin = float(customParameters[8])
-            self.targetPout = float(customParameters[8])
-            self.wastegate = float(customParameters[10])
+            match self.customFileVersion:
+                case 0.5:
+                    self.frequency = 5000
+                    self.speed = float(self.customHeader[2])
+                    self.massflow = 0
+                    mfr = dict(zip([2.5, 1.0, 0.4, 0], [0.25, 0.5, 0.75, 1]))
+                    try:
+                        self.flowRatio = mfr[float(self.customHeader[6]) / float(self.customHeader[4])]
+                    except:
+                        self.flowRatio = 0
 
+                    self.targetPin = float(self.customHeader[8])
+                    self.targetPout = float(self.customHeader[8])
+                    self.wastegate = float(self.customHeader[10])
+                case 0.5 | 0.6:
+                    self.frequency = float(self.customHeader[2])
+                    self.speed = float(self.customHeader[4])
+                    self.massflow = float(self.customHeader[6])
+                    self.flowRatio = float(self.customHeader[8])
+                    self.targetPin = float(self.customHeader[10])
+                    self.targetPout = float(self.customHeader[12])
+                    self.wastegate = float(self.customHeader[14])
+                    self.pulsator = float(self.customHeader[16])
         else:
             print("unable to create Theme 5 Turbo File")
             return None
@@ -871,6 +969,7 @@ class FileSet():
 
     def __len__(self):
         return len(self.dataFiles)
+
     def addFiles(self, dataFiles):
         """adds a new DataFile to the FileSet"""
 
@@ -904,7 +1003,6 @@ class FileSet():
         plt.legend(self.files)
         plt.show()
 
-
     def plotTime(self, channel, *args):
         for data_file in self.dataFiles:
             data_file.plotTime(channel, show_plot=False, *args)
@@ -917,12 +1015,60 @@ class FileSet():
         plt.legend(self.files)
         plt.show()
 
+    def reduceToMean(self):
+        import copy
+
+        newFileSet = copy.deepcopy(self)
+
+        for i in range(self.fileCount):
+            newFileSet.dataFiles[i] = newFileSet.dataFiles[i].reduceToMean()
+
+        return newFileSet
+
+    def reduceToCycle(self, primary, *,
+                      channelSet=[],
+                      cycleRepeats=1,
+                      threshold=0.5,
+                      halfWindowSize=50,
+                      showPlot=False,
+                      align=True):
+
+        import copy
+        newFileSet = copy.deepcopy(self)
+
+        for i in range(newFileSet.fileCount):
+            newFileSet.dataFiles[i] = newFileSet.dataFiles[i].reduceToCycle(primary=primary,
+                                                                            cycleRepeats=cycleRepeats,
+                                                                            threshold=threshold,
+                                                                            halfWindowSize=halfWindowSize,
+                                                                            showPlot=showPlot,
+                                                                            align=align)
+
+        return newFileSet
+
+    def showChannelNames(self):
+        self.dataFiles[0].showChannels()
+
+    def channelToPandas(self, channel):
+        channelDict = {}
+
+        for file in self.dataFiles:
+            channelDict[file.getFilename()[1]] = file.channelToPandas(channel=channel)
+
+        return pd.DataFrame(channelDict)
+
+    def toPandas(self):
+        dataFrames = []
+
+        for file in self.dataFiles:
+            dataFrames.append(file.toPandas())
+
+        return dataFrames
 
 class FileSetCR(FileSet):
 
     def __init__(self, data_file: CompressorRigFile):
         super().__init__(data_file)
-
 
     def addFile(self, dataFile: CompressorRigFile):
         self.dataFiles.append(dataFile)
@@ -930,6 +1076,7 @@ class FileSetCR(FileSet):
     def addFiles(self, dataFiles: list):
         for dataFile in dataFiles:
             self.addFile(dataFile)
+
 
 class FileSetTurbo(FileSet):
 

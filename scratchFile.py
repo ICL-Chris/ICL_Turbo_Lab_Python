@@ -1,7 +1,7 @@
 import DataConstructs as DC
 
-filename = "/Users/cnoon/Library/CloudStorage/OneDrive-ImperialCollegeLondon/Test Data/Compressor Rig Data/22-11-29/900/40000 85-0.csv"
+filename = "/Users/cnoon/Library/CloudStorage/OneDrive-ImperialCollegeLondon/Test Data/Theme 5 pulsating trial/research run 2/23-12-11/Turbo File 11-33-09-0.csv"
 
-f = DC.openDataFile()
+f = DC.openDataFile(filename)
 
-f.getChannelNames(9)
+output = f.cyclicAverage(18)
