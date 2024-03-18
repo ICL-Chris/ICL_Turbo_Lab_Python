@@ -351,7 +351,7 @@ class DataFile:
         """
         if type(channelSet) == int: channelSet = [channelSet]
 
-        plt.plot(self.getChannelData(0), self.getChannelData(channelSet).T, *args)
+        plt.plot(self.getChannelData([0]), self.getChannelData(channelSet).T, *args)
 
         # format the plot
         plt.xlabel(self.__plotLabel(0))
@@ -415,7 +415,8 @@ class DataFile:
                       threshold=0.5,
                       halfWindowSize=50,
                       showPlot=True,
-                      align=True):
+                      align=True,
+                      force_frequency=0):
         """returns 3D numpy array containing wrapped data from each cycle
         as identified by the cycle using the primaryChannel to identify
         the cyclic nature of the data
@@ -449,7 +450,10 @@ class DataFile:
 
         crossingPoints = np.nonzero(above[1:] > above[:-1])[0]
 
-        period = (crossingPoints[-1] - crossingPoints[0]) / (len(crossingPoints) - 1)
+        if force_frequency:
+            period = self.frequency / force_frequency
+        else:
+            period = (crossingPoints[-1] - crossingPoints[0]) / (len(crossingPoints) - 1)
 
         # create the 3D output array
         averageCycle = np.zeros((int(period), len(channelSet), int((self.dataPoints // period))))
@@ -482,7 +486,7 @@ class DataFile:
             ax.plot(time, np.squeeze(np.mean(averageCycle[:, primary, :], axis=2)), color="C3")
             plt.show()
 
-        return (np.squeeze(np.mean(averageCycle, axis=2)), time)
+        return (np.squeeze(np.mean(averageCycle, axis=2)), time, self.frequency / period)
 
     def delta(self, channelSet):
         """Returns an array of length = dataPoints containing the point-
@@ -915,7 +919,7 @@ class Theme5TurboFile(TurboRigFile):
                 self.timestamp = datetime.strptime(self.customHeader[0], "%d/%m/%y %H:%M:%S")
 
             match self.customFileVersion:
-                case 0.5:
+                case '0.5':
                     self.frequency = 5000
                     self.speed = float(self.customHeader[2])
                     self.massflow = 0
@@ -928,7 +932,7 @@ class Theme5TurboFile(TurboRigFile):
                     self.targetPin = float(self.customHeader[8])
                     self.targetPout = float(self.customHeader[8])
                     self.wastegate = float(self.customHeader[10])
-                case 0.5 | 0.6:
+                case '0.6':
                     self.frequency = float(self.customHeader[2])
                     self.speed = float(self.customHeader[4])
                     self.massflow = float(self.customHeader[6])
